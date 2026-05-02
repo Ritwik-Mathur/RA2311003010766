@@ -1,23 +1,22 @@
 /**
  * Notification Algorithm — Stage 1
  *
- * Implements logic to fetch and return TOP N latest notifications
- * sorted by timestamp, with an efficient min-heap approach for
- * maintaining top N when new notifications arrive.
+ * Implements logic to fetch and return TOP N priority notifications
+ * sorted by type priority (placement > result > event), with
+ * timestamp as a tiebreaker, using an efficient min-heap approach.
+ *
+ * PRIORITY ORDER:
+ *   placement (3) > result (2) > event (1)
  *
  * PSEUDOCODE:
  * ─────────────────────────────────────────────────────────────────
  * 1. FETCH notifications from API (dynamic, no DB storage)
  * 2. PARSE each notification — normalize type & timestamp
  * 3. SORT notifications by timestamp DESCENDING (newest first)
- * 4. SLICE the top N notifications (default N = 10)
- * 5. RETURN the sorted top N list
- *
- * For efficient top-N maintenance with streaming data:
- * - Use a MIN-HEAP of size N
- * - For each new notification:
+ * 4. For PRIORITY view, rank by type weight then recency
+ * 5. Use a MIN-HEAP of size N for efficient top-N extraction
  *   a) If heap size < N → insert directly
- *   b) If new timestamp > heap.min → remove min, insert new
+ *   b) If new score > heap.min → remove min, insert new
  *   c) Otherwise → discard (it's not in top N)
  * - Time complexity: O(M log N) where M = total notifications
  * ─────────────────────────────────────────────────────────────────
@@ -25,6 +24,27 @@
 
 import { Log } from '@logger';
 import type { Notification, RawNotification } from '../types';
+
+// ─── Priority weights: placement > result > event ───────────────────────────
+
+const TYPE_PRIORITY: Record<string, number> = {
+  placement: 3,
+  result: 2,
+  event: 1,
+};
+
+/**
+ * Compute a combined priority score.
+ * Type weight is the primary factor (multiplied by a large constant)
+ * so that ALL placements rank above ALL results, etc.
+ * Timestamp is the tiebreaker within the same type.
+ */
+function getPriorityScore(notif: Notification): number {
+  const typeWeight = TYPE_PRIORITY[notif.type.toLowerCase()] || 0;
+  const recency = parseTimestamp(notif.timestamp);
+  // typeWeight * 1e15 ensures type always dominates over timestamp
+  return typeWeight * 1e15 + recency;
+}
 
 // ─── Utility: Parse timestamp to epoch ──────────────────────────────────────
 
@@ -73,7 +93,7 @@ export function sortNotificationsByTimestamp(
   return sorted;
 }
 
-// ─── Core: Get Top N Notifications ──────────────────────────────────────────
+// ─── Core: Get Top N Notifications by priority ─────────────────────────────
 
 export function getTopNNotifications(
   notifications: Notification[],
@@ -83,17 +103,22 @@ export function getTopNNotifications(
     'frontend',
     'info',
     'api',
-    `extracting top ${n} notifications from ${notifications.length} total`
+    `extracting top ${n} priority notifications (placement>result>event)`
   );
 
-  const sorted = sortNotificationsByTimestamp(notifications);
+  // Sort by type priority DESC, then timestamp DESC as tiebreaker
+  const sorted = [...notifications].sort((a, b) => {
+    const scoreA = getPriorityScore(a);
+    const scoreB = getPriorityScore(b);
+    return scoreB - scoreA;
+  });
   const topN = sorted.slice(0, n);
 
   Log(
     'frontend',
     'info',
     'api',
-    `returned ${topN.length} top notifications`
+    `returned ${topN.length} priority notifications`
   );
 
   return topN;
@@ -128,12 +153,14 @@ export function parseNotifications(
 /**
  * MinHeap implementation for maintaining top N notifications efficiently.
  *
+ * Priority order: placement > result > event (with timestamp tiebreaker)
+ *
  * When new notifications stream in, we don't re-sort the entire array.
  * Instead:
- * - Maintain a min-heap of size N (keyed by timestamp)
- * - New notification: compare with heap root (minimum timestamp)
- *   - If newer → replace root and heapify down
- *   - If older → skip (not in top N)
+ * - Maintain a min-heap of size N (keyed by priority score)
+ * - New notification: compare with heap root (minimum score)
+ *   - If higher priority → replace root and heapify down
+ *   - If lower → skip (not in top N)
  * - Result: O(M log N) instead of O(M log M) for each update
  */
 export class MinHeapTopN {
@@ -146,12 +173,12 @@ export class MinHeapTopN {
       'frontend',
       'info',
       'api',
-      `min-heap initialized with capacity ${n}`
+      `min-heap initialized with capacity ${n} (placement>result>event)`
     );
   }
 
-  private getTimestamp(notif: Notification): number {
-    return parseTimestamp(notif.timestamp);
+  private getScore(notif: Notification): number {
+    return getPriorityScore(notif);
   }
 
   private parent(i: number): number {
@@ -173,8 +200,8 @@ export class MinHeapTopN {
   private heapifyUp(i: number): void {
     while (
       i > 0 &&
-      this.getTimestamp(this.heap[i]) <
-        this.getTimestamp(this.heap[this.parent(i)])
+      this.getScore(this.heap[i]) <
+        this.getScore(this.heap[this.parent(i)])
     ) {
       this.swap(i, this.parent(i));
       i = this.parent(i);
@@ -188,16 +215,16 @@ export class MinHeapTopN {
 
     if (
       l < this.heap.length &&
-      this.getTimestamp(this.heap[l]) <
-        this.getTimestamp(this.heap[smallest])
+      this.getScore(this.heap[l]) <
+        this.getScore(this.heap[smallest])
     ) {
       smallest = l;
     }
 
     if (
       r < this.heap.length &&
-      this.getTimestamp(this.heap[r]) <
-        this.getTimestamp(this.heap[smallest])
+      this.getScore(this.heap[r]) <
+        this.getScore(this.heap[smallest])
     ) {
       smallest = r;
     }
@@ -217,9 +244,9 @@ export class MinHeapTopN {
       this.heap.push(notification);
       this.heapifyUp(this.heap.length - 1);
     } else if (
-      this.getTimestamp(notification) > this.getTimestamp(this.heap[0])
+      this.getScore(notification) > this.getScore(this.heap[0])
     ) {
-      // New notification is newer than the oldest in top N — replace
+      // New notification has higher priority than lowest in heap - replace
       this.heap[0] = notification;
       this.heapifyDown(0);
     }
@@ -246,7 +273,7 @@ export class MinHeapTopN {
    */
   getTopN(): Notification[] {
     return [...this.heap].sort(
-      (a, b) => this.getTimestamp(b) - this.getTimestamp(a)
+      (a, b) => this.getScore(b) - this.getScore(a)
     );
   }
 
