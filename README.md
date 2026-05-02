@@ -15,11 +15,8 @@
 ### light theme
 <img src="screenshots/light_theme.png" alt="Light Theme" width="800" />
 
-### ocean theme
-<img src="screenshots/ocean_theme.png" alt="Ocean Theme" width="800" />
-
-### sunset theme
-<img src="screenshots/sunset_theme.png" alt="Sunset Theme" width="800" />
+### priority view (placement > result > event)
+<img src="screenshots/priority_view.png" alt="Priority Notifications" width="800" />
 
 ---
 
