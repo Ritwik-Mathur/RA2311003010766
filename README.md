@@ -58,6 +58,8 @@ npm run dev
 
 it opens on http://localhost:3000
 
+deployed version: https://notifyhub-ritwik.netlify.app/
+
 ## getting your credentials
 
 if you dont have clientID and clientSecret yet, run:
