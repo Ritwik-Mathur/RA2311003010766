@@ -16,7 +16,7 @@
 <img src="screenshots/light_theme.png" alt="Light Theme" width="800" />
 
 ### priority view (placement > result > event)
-<img src="screenshots/priority_view.png" alt="Priority Notifications" width="800" />
+<img src="screenshots/priority.png" alt="Priority Notifications" width="800" />
 
 ---
 
