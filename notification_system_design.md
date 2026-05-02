@@ -1,170 +1,41 @@
-# Notification System Design
+# Stage 1
 
-## 1. Architecture Overview
+## how i get the top 10 priority notifications
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        BROWSER (Client)                          │
-│                                                                  │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────────┐ │
-│  │  React App   │  │  MUI Theme   │  │  React Router (SPA)     │ │
-│  │  (Vite+TS)   │  │  (Dark Mode) │  │  Query Params Routing   │ │
-│  └──────┬───────┘  └──────────────┘  └─────────────────────────┘ │
-│         │                                                        │
-│  ┌──────▼───────────────────────────────────────────────────────┐│
-│  │                    State Management Layer                     ││
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────┐   ││
-│  │  │useNotifs │ │ useAuth  │ │ useState │ │ URL SearchParams│  ││
-│  │  │  (hook)  │ │  (hook)  │ │(read/un) │ │ (pagination)   │  ││
-│  │  └────┬─────┘ └────┬─────┘ └──────────┘ └───────────────┘   ││
-│  └───────┼─────────────┼────────────────────────────────────────┘│
-│          │             │                                         │
-│  ┌───────▼─────────────▼────────────────────────────────────────┐│
-│  │                    API Utility Layer                           ││
-│  │  ┌──────────────┐ ┌──────────────┐ ┌───────────────────────┐ ││
-│  │  │ fetchNotifs  │ │ authenticate │ │ register (one-time)   │ ││
-│  │  │ (axios GET)  │ │ (axios POST) │ │ (axios POST)          │ ││
-│  │  └──────┬───────┘ └──────┬───────┘ └───────────────────────┘ ││
-│  └─────────┼────────────────┼───────────────────────────────────┘│
-│            │                │                                    │
-│  ┌─────────▼────────────────▼───────────────────────────────────┐│
-│  │              Logging Middleware (logger.ts)                    ││
-│  │  Log(stack, level, package, message) ──► POST /logs           ││
-│  │  • Batch queue (5 logs / flush)                               ││
-│  │  • Console output with styled levels                          ││
-│  │  • Auto-flush every 3s                                        ││
-│  └──────────────────────────┬───────────────────────────────────┘│
-└─────────────────────────────┼────────────────────────────────────┘
-                              │
-                    ┌─────────▼──────────┐
-                    │  Evaluation API     │
-                    │  20.207.122.201     │
-                    │                    │
-                    │  /register         │
-                    │  /auth             │
-                    │  /notifications    │
-                    │  /logs             │
-                    └────────────────────┘
-```
+there are 3 types of notifications the api gives: placement, result, event
 
-## 2. Data Flow
+i rank them like this:
+- placement = highest priority (weight 3)
+- result = medium priority (weight 2)
+- event = lowest priority (weight 1)
 
-### 2.1 Authentication Flow
+so when you click the priority toggle, placements always show up first, then results, then events. within the same type, newer ones come first.
 
-```
-User → .env config → useAuth hook → POST /auth → access_token (in-memory)
-                                                       │
-                                                       ▼
-                                              initLogger(token)
-                                              axios interceptor
-```
+## how it works with new notifications
 
-### 2.2 Notification Fetching
+the api sends new notifications every time you fetch. to keep the top 10 without re-sorting the whole list every time, i used a min-heap.
 
-```
-Page Mount
-   │
-   ▼
-useNotifications hook
-   │
-   ├─► Log('frontend','info','hook','loading notifications')
-   │
-   ├─► GET /notifications (axios + Bearer token)
-   │
-   ├─► processNotifications(raw, topN=10)
-   │   ├─ parseNotifications() → normalize types & IDs
-   │   ├─ sortByTimestamp(DESC) → newest first
-   │   └─ MinHeapTopN(10).insertBatch() → priority set
-   │
-   ├─► setState({ all, priority })
-   │
-   └─► Log('frontend','info','hook','loaded N notifications')
-```
+the min-heap works like this:
+- it holds 10 notifications max
+- each notification gets a score = (type weight * big number) + timestamp
+- when a new one comes in:
+  - if the heap has less than 10, just add it
+  - if the new one has a higher score than the lowest in the heap, replace it
+  - otherwise skip it
+- this way we only do log(10) work per notification instead of sorting everything
 
-### 2.3 UI Rendering Pipeline
+the code is in `notification_app_fe/src/utils/notificationAlgorithm.ts`
 
-```
-allNotifications / priorityNotifications
-         │
-         ├─► Filter by notification_type (query param)
-         │
-         ├─► Paginate: slice(start, end) based on page & limit
-         │
-         └─► Render NotificationCard[] with read/unread state
-```
+## priority output
 
-## 3. Priority Selection Logic
+this is what the priority view looks like. placements show first, then results, then events:
 
-### Simple Approach (implemented)
+<img src="screenshots/priority_view.png" alt="Priority Notifications" width="800" />
 
-- Sort all notifications by timestamp descending
-- Take first N items → these are the "priority" (most recent) notifications
+## logging middleware
 
-### Efficient Approach (implemented — MinHeap)
+every action in the app gets logged using the `Log()` function. it takes 4 params: stack, level, package, message. all values are forced to lowercase before sending to the api.
 
-When new data streams in, a **min-heap** of size N is used:
+logs are batched (5 at a time) and sent to `/api/logs` with the auth token.
 
-1. If heap has fewer than N items → insert directly
-2. If new item's timestamp > heap root (oldest in top-N) → replace root, heapify down
-3. Otherwise → discard (not in top-N)
-
-**Complexity:** O(M log N) where M = total notifications, N = priority count
-
-## 4. Logging Strategy
-
-### Where Logging is Used
-
-| Location            | Level  | Package   | Example Message                             |
-|---------------------|--------|-----------|---------------------------------------------|
-| App init            | info   | page      | "app initialized"                           |
-| Page mount          | info   | page      | "notification page loaded"                  |
-| API request         | debug  | api       | "outgoing GET request to /notifications"    |
-| API success         | info   | api       | "fetched 50 notifications successfully"     |
-| API error           | error  | api       | "api error 401 from /notifications"         |
-| Filter change       | info   | component | "filter type changed: event"                |
-| Pagination          | info   | component | "pagination: page 2"                        |
-| Mark as read        | info   | state     | "marking notification xyz as read"          |
-| Priority toggle     | info   | state     | "priority mode toggled to: true"            |
-| State update        | debug  | state     | "query params updated"                      |
-| Sorting             | debug  | api       | "sorting 50 notifications by timestamp"     |
-| Parsing             | info   | api       | "parsed 50 notifications successfully"      |
-
-### Batch Delivery
-
-- Logs are queued in memory (batch size = 5)
-- Flushed to `POST /logs` every 3 seconds or when batch is full
-- Remaining logs flushed on app unmount
-
-## 5. Error Handling
-
-| Error Type          | Handling                                                  |
-|---------------------|-----------------------------------------------------------|
-| Network failure     | Show error alert in UI, log as `error` level              |
-| Auth failure        | Auto-auth retries from env, falls back to manual          |
-| Invalid timestamp   | Fallback to epoch 0, log as `warn`                       |
-| Empty response      | Show empty state UI with filter hint                      |
-| Token expiry        | Interceptor logs error, re-auth can be triggered          |
-| Parse error         | Graceful fallback with default values                     |
-
-## 6. Scaling Considerations
-
-### Frontend
-
-- **Memoization**: `React.memo` on NotificationCard, `useMemo` on filtered/paginated lists
-- **Virtual scrolling**: For 1000+ notifications, integrate `react-window` or `@tanstack/virtual`
-- **Debounced search**: If text search is added, debounce API calls (300ms)
-- **Service Worker**: Cache notification data for offline access
-
-### Backend (hypothetical)
-
-- **WebSocket/SSE**: Push new notifications instead of polling
-- **Redis cache**: Cache notification lists with TTL
-- **Pagination at API level**: Server-side cursor-based pagination
-- **Message queue**: Process notification delivery asynchronously (RabbitMQ/Kafka)
-
-### Logging
-
-- **Structured JSON**: Already implemented
-- **Log levels in prod**: Filter to `info` and above (skip `debug`)
-- **Sampling**: In high-traffic, sample debug logs at 10%
-- **Async batching**: Already implemented (queue + periodic flush)
+the code is in `logging_middleware/logger.ts`
