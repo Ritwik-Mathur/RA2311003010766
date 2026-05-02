@@ -1,0 +1,15 @@
+[build]
+  base = "notification_app_fe"
+  command = "npm run build"
+  publish = "dist"
+
+[[redirects]]
+  from = "/api/*"
+  to = "http://20.207.122.201/evaluation-service/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
